@@ -1,0 +1,449 @@
+﻿@page "/"
+@implements IDisposable
+@inject IJSRuntime JS
+
+<h1 class="text-center">Mini Football Heads</h1>
+
+<div class="scoreboard">
+    <div class="team team-left">Team A: @scoreA</div>
+    <div class="team team-right">Team B: @scoreB</div>
+    @if (showGoalEffect)
+    {
+        <div class="goal-particles @(lastScoredLeft ? "left" : "right")"></div>
+    }
+</div>
+
+<div class="text-center mb-3">
+    <button class="btn btn-warning" @onclick="ResetGame">Reset Game</button>
+</div>
+
+<div tabindex="0" @onkeydown="HandleKeyPress" @onkeyup="HandleKeyRelease" style="outline: none;">
+    <div class="field">
+        @if (showGoalEffect)
+        {
+            <div class="goal-particles @(lastScoredLeft ? "left" : "right")"></div>
+        }
+
+        <!-- Left Goal -->
+        <div class="goal goal-left"></div>
+
+        <!-- Right Goal -->
+        <div class="goal goal-right"></div>
+
+        <!-- Player 1 -->
+        <div class="player" style="@($"left: {playerX}px; bottom: {playerY}px")">
+            <div class="leg" style="@GetLegStyle(isKicking1)"></div>
+        </div>
+
+        <!-- Player 2 -->
+        <div class="player player2" style="@($"left: {player2X}px; bottom: {player2Y}px")">
+            <div class="leg leg2" style="@GetLegStyle(isKicking2, false)"></div>
+        </div>
+
+        <!-- Ball -->
+        <div class="ball" style="@($"left: {ballX}px; bottom: {ballY}px")"></div>
+    </div>
+</div>
+
+@code {
+    // Player movement states
+    private bool isMovingLeft1 = false;
+    private bool isMovingRight1 = false;
+    private bool isMovingLeft2 = false;
+    private bool isMovingRight2 = false;
+
+
+    private int scoreA = 0;
+    private int scoreB = 0;
+
+    private int fieldWidth = 800;
+    private int fieldHeight = 300;
+
+    // Player 1
+    private int playerX = 100;
+    private double playerY = 0;
+    private double playerVY = 0;
+    private bool isJumping = false;
+
+    private int lastPlayerX = 100;
+    private double lastPlayerY = 0;
+
+    // Player 2
+    private int player2X = 650;
+    private double player2Y = 0;
+    private double player2VY = 0;
+    private bool isJumping2 = false;
+
+    private int lastPlayer2X = 650;
+    private double lastPlayer2Y = 0;
+
+    // Kicking state
+    private bool isKicking1 = false;
+    private bool isKicking2 = false;
+
+	// Goal effect
+    private bool showGoalEffect = false;
+    private bool lastScoredLeft = true;
+
+    // Ball properties
+    private double ballX = 400;
+    private double ballY = 0;
+    private double ballVX = 0;
+    private double ballVY = 0;
+
+    private const double gravity = 0.5;
+    private const double jumpStrength = 8;
+    private const double groundY = 0;
+    private const double ballFriction = 0.99;
+
+    //Reset Game Button 
+    private void ResetGame()
+    {
+        scoreA = 0;
+        scoreB = 0;
+        ResetPositions();
+    }
+
+    private Timer? gameLoopTimer;
+
+    private void ShowGoalParticles()
+    {
+        showGoalEffect = true;
+
+        var _ = Task.Run(async () =>
+        {
+            await Task.Delay(1000); // show for 1 second
+            showGoalEffect = false;
+            await InvokeAsync(StateHasChanged);
+        });
+
+        InvokeAsync(StateHasChanged);
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await JS.InvokeVoidAsync("focusGame");
+        StartGameLoop();
+    }
+
+    private void StartGameLoop()
+    {
+        gameLoopTimer = new Timer(_ =>
+        {
+			//Smooth player movement
+            if (isMovingRight1)
+                playerX = Math.Min(playerX + 4, fieldWidth - 60);
+            if (isMovingLeft1)
+                playerX = Math.Max(playerX - 4, 0);
+
+            if (isMovingRight2)
+                player2X = Math.Min(player2X + 4, fieldWidth - 60);
+            if (isMovingLeft2)
+                player2X = Math.Max(player2X - 4, 0);
+
+            
+            // Gravity: Player 1
+            if (playerY > groundY || isJumping)
+            {
+                playerVY -= gravity;
+                playerY += playerVY;
+                if (playerY <= groundY)
+                {
+                    playerY = groundY;
+                    playerVY = 0;
+                    isJumping = false;
+                }
+            }
+
+            // Gravity: Player 2
+            if (player2Y > groundY || isJumping2)
+            {
+                player2VY -= gravity;
+                player2Y += player2VY;
+                if (player2Y <= groundY)
+                {
+                    player2Y = groundY;
+                    player2VY = 0;
+                    isJumping2 = false;
+                }
+            }
+
+            // Ball physics
+            ballVY -= gravity;
+            ballY += ballVY;
+            ballX += ballVX;
+
+            //Bounce Ball/Kicking 
+            if (ballX <= 0)
+            {
+                ballX = 0;
+                ballVX = Math.Abs(ballVX); // Bounce right
+            }
+            else if (ballX >= fieldWidth - 30)
+            {
+                ballX = fieldWidth - 30;
+                ballVX = -Math.Abs(ballVX); // Bounce left
+            }
+
+            // Ground bounce
+            if (ballY <= groundY)
+            {
+                ballY = groundY;
+                ballVY = -ballVY * 0.7;
+
+                if (Math.Abs(ballVY) < 0.5)
+                {
+                    ballVY = 0;
+                }
+            }
+
+            //Air Resistance
+            ballVX *= 0.995;
+            ballVY *= 0.995;
+
+
+            // Ball roll friction
+            ballVX *= ballFriction;
+
+			// Simple collision: player 1, kick the ball
+            double dx = ballX - playerX;
+            double dy = ballY - playerY;
+            double distance = Math.Sqrt(dx * dx + dy * dy);
+            double minDistance = 30 + 15; // player radius + ball radius
+
+            if (distance < minDistance)
+            {
+                // Normalize vector (dx, dy)
+                double nx = dx / distance;
+                double ny = dy / distance;
+
+                // Apply a force only when overlapping — simulate kick
+                double overlap = minDistance - distance;
+                double force = 1.5;
+
+                ballVX += force * nx + (playerX - lastPlayerX) * 0.05;
+                ballVY += force * ny + (playerY - lastPlayerY) * 0.05;
+
+                // Optional: nudge the ball outside the player to avoid sticking
+                ballX = playerX + nx * minDistance;
+                ballY = playerY + ny * minDistance;
+            }
+
+            // Simple collision: player 2, kick the ball 
+            double dx2 = ballX - player2X;
+            double dy2 = ballY - player2Y;
+            double distance2 = Math.Sqrt(dx2 * dx2 + dy2 * dy2);
+            double minDistance2 = 20 + 15; // match player and ball radii
+
+            if (distance2 < minDistance2)
+            {
+                double nx2 = dx2 / distance2;
+                double ny2 = dy2 / distance2;
+
+                double force = 1.5;
+
+                // Only apply kick force if real overlap (distance much less)
+                if (distance2 < minDistance2 - 1)
+                {
+                    ballVX += nx2 * force + (player2X - lastPlayer2X) * 0.05;
+                    ballVY += ny2 * force + (player2Y - lastPlayer2Y) * 0.05;
+
+                    // Optional: push ball slightly away to prevent sticking
+                    ballX = player2X + nx2 * minDistance2;
+                    ballY = player2Y + ny2 * minDistance2;
+                }
+            }
+
+            // Wall bounds
+            if (ballX <= 0 || ballX >= fieldWidth - 30)
+            {
+                ballVX = -ballVX;
+            }
+
+            // Goal zone dimensions (assume 50px wide on each side)
+            if (ballX <= 5 && ballY <= 30)
+            {
+                scoreB++;
+                lastScoredLeft = true;
+                ShowGoalParticles();
+                ResetPositions();
+            }
+            else if (ballX >= fieldWidth - 35 && ballY <= 30)
+            {
+                scoreA++;
+                lastScoredLeft = false;
+                ShowGoalParticles();
+                ResetPositions();
+            }
+
+
+            InvokeAsync(StateHasChanged);
+
+            lastPlayerX = playerX;
+            lastPlayerY = playerY;
+
+            lastPlayer2X = player2X;
+            lastPlayer2Y = player2Y;
+
+
+        }, null, 0, 33); // ~30 FPS
+    }
+
+    private void HandleKeyPress(KeyboardEventArgs e)
+    {
+        switch (e.Key)
+        {
+            // Player 1
+            case "ArrowRight":
+                isMovingRight1 = true;
+                break;
+            case "ArrowLeft":
+                isMovingLeft1 = true;
+                break;
+            case " ":
+            case "ArrowUp":
+                if (!isJumping)
+                {
+                    isJumping = true;
+                    playerVY = jumpStrength;
+                }
+                break;
+
+            // Player 2
+            case "d":
+                isMovingRight2 = true;
+                break;
+            case "a":
+                isMovingLeft2 = true;
+                break;
+            case "w":
+                if (!isJumping2)
+                {
+                    isJumping2 = true;
+                    player2VY = jumpStrength;
+                }
+                break;
+
+            // Kicks
+            case ".":
+            case ">":
+                KickBall(playerX, playerY);
+                TriggerKick(true);
+                break;
+            case "f":
+                KickBall(player2X, player2Y);
+                TriggerKick(false);
+                break;
+        }
+    }
+
+    private void HandleKeyRelease(KeyboardEventArgs e)
+    {
+        switch (e.Key)
+        {
+            case "ArrowRight":
+                isMovingRight1 = false;
+                break;
+            case "ArrowLeft":
+                isMovingLeft1 = false;
+                break;
+            case "d":
+                isMovingRight2 = false;
+                break;
+            case "a":
+                isMovingLeft2 = false;
+                break;
+        }
+    }
+
+    public void Dispose()
+    {
+        gameLoopTimer?.Dispose();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            await JS.InvokeVoidAsync("focusGame");
+        }
+    }
+
+    private void KickBall(double px, double py)
+    {
+        double dx = ballX - px;
+        double dy = ballY - py;
+        double distance = Math.Sqrt(dx * dx + dy * dy);
+
+        if (distance < 60)
+        {
+            double force = 9.0; // boosted
+            double nx = dx / distance;
+            double ny = dy / distance;
+
+            ballVX += nx * force;
+            ballVY += ny * force + 7.5; // even more lift
+        }
+    }
+
+    private void ResetPositions()
+    {
+        playerX = 100;
+        playerY = 0;
+        playerVY = 0;
+        isJumping = false;
+
+        player2X = 650;
+        player2Y = 0;
+        player2VY = 0;
+        isJumping2 = false;
+
+        ballX = fieldWidth / 2 - 15;
+        ballY = 0;
+        ballVX = 0;
+        ballVY = 0;
+    }
+
+    private void TriggerKick(bool isPlayer1)
+    {
+        if (isPlayer1)
+        {
+            isKicking1 = true;
+        }
+        else
+        {
+            isKicking2 = true;
+        }
+
+        var _ = Task.Run(async () =>
+        {
+            await Task.Delay(150);
+            if (isPlayer1) isKicking1 = false;
+            else isKicking2 = false;
+
+            await InvokeAsync(StateHasChanged);
+        });
+
+        StateHasChanged();
+    }
+
+    private string GetLegStyle(bool isKicking, bool isLeft = true)
+    {
+        string side = isLeft ? "left" : "right";
+        string horizontalOffset = isKicking ? "35px" : "25px";
+        string verticalOffset = "0px";
+
+        // Different rotation angle and direction based on side
+        string transform = isKicking
+            ? (isLeft ? "rotate(-60deg)" : "rotate(60deg)") // Player 1 rotates counterclockwise, Player 2 clockwise
+            : "rotate(0deg)";
+
+        // Set rotation pivot: Player 1 (left) = top left, Player 2 (right) = top right
+        string transformOrigin = isLeft ? "top left" : "top right";
+
+        // Color logic can be overridden by CSS class too
+        string background = isLeft ? "white" : "yellow";
+
+        return $"position:absolute; width:10px; height:30px; background:{background}; bottom:{verticalOffset}; {side}:{horizontalOffset}; transform:{transform}; transform-origin:{transformOrigin}; transition:transform 0.1s ease;";
+    }
+}
